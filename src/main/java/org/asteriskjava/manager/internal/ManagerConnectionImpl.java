@@ -35,9 +35,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.asteriskjava.AsteriskVersion;
 import org.asteriskjava.manager.AuthenticationFailedException;
@@ -51,6 +51,7 @@ import org.asteriskjava.manager.SendActionCallback;
 import org.asteriskjava.manager.TimeoutException;
 import org.asteriskjava.manager.action.ChallengeAction;
 import org.asteriskjava.manager.action.CommandAction;
+import org.asteriskjava.manager.action.CoreSettingsAction;
 import org.asteriskjava.manager.action.EventGeneratingAction;
 import org.asteriskjava.manager.action.LoginAction;
 import org.asteriskjava.manager.action.LogoffAction;
@@ -65,6 +66,7 @@ import org.asteriskjava.manager.event.ProtocolIdentifierReceivedEvent;
 import org.asteriskjava.manager.event.ResponseEvent;
 import org.asteriskjava.manager.response.ChallengeResponse;
 import org.asteriskjava.manager.response.CommandResponse;
+import org.asteriskjava.manager.response.CoreSettingsResponse;
 import org.asteriskjava.manager.response.ManagerError;
 import org.asteriskjava.manager.response.ManagerResponse;
 import org.asteriskjava.util.DateUtil;
@@ -88,17 +90,7 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
     private static final int DEFAULT_PORT = 5038;
     private static final int RECONNECTION_VERSION_INTERVAL = 500;
     private static final int MAX_VERSION_ATTEMPTS = 4;
-    private static final Pattern SHOW_VERSION_PATTERN = Pattern.compile("^(core )?show version.*");
-
-    private static final Pattern VERSION_PATTERN_1_6 = Pattern.compile("^\\s*Asterisk ((SVN-branch|GIT)-)?1\\.6[-. ].*");
-    private static final Pattern VERSION_PATTERN_1_8 = Pattern.compile("^\\s*Asterisk ((SVN-branch|GIT)-)?1\\.8[-. ].*");
-    private static final Pattern VERSION_PATTERN_10 = Pattern.compile("^\\s*Asterisk ((SVN-branch|GIT)-)?10[-. ].*");
-    private static final Pattern VERSION_PATTERN_11 = Pattern.compile("^\\s*Asterisk ((SVN-branch|GIT)-)?11[-. ].*");
-    private static final Pattern VERSION_PATTERN_CERTIFIED_11 = Pattern.compile("^\\s*Asterisk certified/((SVN-branch|GIT)-)?11[-. ].*");
-    private static final Pattern VERSION_PATTERN_12 = Pattern.compile("^\\s*Asterisk ((SVN-branch|GIT)-)?12[-. ].*");
-    private static final Pattern VERSION_PATTERN_13 = Pattern.compile("^\\s*Asterisk ((SVN-branch|GIT)-)?13[-. ].*");
-    private static final Pattern VERSION_PATTERN_CERTIFIED_13 = Pattern.compile("^\\s*Asterisk certified/((SVN-branch|GIT)-)?13[-. ].*");
-    private static final Pattern VERSION_PATTERN_14 = Pattern.compile("^\\s*Asterisk (GIT-)?14[-. ].*");
+    private static final String CMD_SHOW_VERSION = "core show version";
 
     private static final AtomicLong idCounter = new AtomicLong(0);
 
@@ -530,29 +522,26 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
             connect();
         }
 
-        synchronized (protocolIdentifier)
+        if (protocolIdentifier.getValue() == null)
         {
-            if (protocolIdentifier.value == null)
+            try
             {
-                try
-                {
-                    protocolIdentifier.wait(timeout);
-                }
-                catch (InterruptedException e) // NOPMD
-                {
-                    Thread.currentThread().interrupt();
-                }
+                protocolIdentifier.await(timeout);
             }
+            catch (InterruptedException e) // NOPMD
+            {
+                Thread.currentThread().interrupt();
+            }
+        }
 
-            if (protocolIdentifier.value == null)
+        if (protocolIdentifier.getValue() == null)
+        {
+            disconnect();
+            if (reader != null && reader.getTerminationException() != null)
             {
-                disconnect();
-                if (reader != null && reader.getTerminationException() != null)
-                {
-                    throw reader.getTerminationException();
-                }
-                throw new TimeoutException("Timeout waiting for protocol identifier");
+                throw reader.getTerminationException();
             }
+            throw new TimeoutException("Timeout waiting for protocol identifier");
         }
 
         challengeAction = new ChallengeAction("MD5");
@@ -637,148 +626,94 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
     {
         int attempts = 0;
 
-        // if ("Asterisk Call Manager/1.1".equals(protocolIdentifier.value))
-        // {
-        // return AsteriskVersion.ASTERISK_1_6;
-        // }
+        logger.info("Got asterisk protocol identifier version " + protocolIdentifier.getValue());
 
         while (attempts++ < MAX_VERSION_ATTEMPTS)
         {
-            final ManagerResponse showVersionFilesResponse;
-            final List<String> showVersionFilesResult;
-
-            // increase timeout as output is quite large
-            showVersionFilesResponse = sendAction(new CommandAction("show version files pbx.c"), defaultResponseTimeout * 2);
-            if (!(showVersionFilesResponse instanceof CommandResponse))
+            try
             {
-                // return early in case of permission problems
-                // org.asteriskjava.manager.response.ManagerError:
-                // actionId='null'; message='Permission denied';
-                // response='Error';
-                // uniqueId='null'; systemHashcode=15231583
-                break;
+                AsteriskVersion version = determineVersionByCoreSettings();
+                if (version != null)
+                    return version;
+            }
+            catch (Exception e)
+            {
             }
 
-            showVersionFilesResult = ((CommandResponse) showVersionFilesResponse).getResult();
-            if (showVersionFilesResult != null && !showVersionFilesResult.isEmpty())
+            try
             {
-                final String line1 = showVersionFilesResult.get(0);
-
-                if (line1 != null && line1.startsWith("File"))
-                {
-                    final String rawVersion;
-
-                    rawVersion = getRawVersion();
-                    if (rawVersion != null && rawVersion.startsWith("Asterisk 1.4"))
-                    {
-                        return AsteriskVersion.ASTERISK_1_4;
-                    }
-                    return AsteriskVersion.ASTERISK_1_2;
-                }
-                else if (line1 != null && line1.contains("No such command"))
-                {
-
-                    final ManagerResponse coreShowVersionResponse = sendAction(new CommandAction("core show version"),
-                            defaultResponseTimeout * 2);
-
-                    if (coreShowVersionResponse != null && coreShowVersionResponse instanceof CommandResponse)
-                    {
-                        final List<String> coreShowVersionResult = ((CommandResponse) coreShowVersionResponse).getResult();
-
-                        if (coreShowVersionResult != null && !coreShowVersionResult.isEmpty())
-                        {
-                            final String coreLine = coreShowVersionResult.get(0);
-
-                            if (VERSION_PATTERN_1_6.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_1_6;
-                            }
-                            else if (VERSION_PATTERN_1_8.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_1_8;
-                            }
-                            else if (VERSION_PATTERN_10.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_10;
-                            }
-                            else if (VERSION_PATTERN_11.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_11;
-                            }
-			    else if (VERSION_PATTERN_CERTIFIED_11.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_11;
-                            }
-                            else if (VERSION_PATTERN_12.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_12;
-                            }
-                            else if (VERSION_PATTERN_13.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_13;
-                            }
-			    else if (VERSION_PATTERN_CERTIFIED_13.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_13;
-                            }
-                            else if (VERSION_PATTERN_14.matcher(coreLine).matches())
-                            {
-                                return AsteriskVersion.ASTERISK_14;
-                            }
-                        }
-                    }
-
-                    try
-                    {
-                        Thread.sleep(RECONNECTION_VERSION_INTERVAL);
-                    }
-                    catch (Exception ex)
-                    {
-                        // ingnore
-                    } // NOPMD
-                }
-                else
-                {
-                    // if it isn't the "no such command", break and return the
-                    // lowest version immediately
-                    break;
-                }
+                AsteriskVersion version = determineVersionByCoreShowVersion();
+                if (version != null)
+                    return version;
             }
+            catch (Exception e)
+            {
+            }
+
+            try
+            {
+                Thread.sleep(RECONNECTION_VERSION_INTERVAL);
+            }
+            catch (Exception ex)
+            {
+                // ignore
+            } // NOPMD
         }
 
-        // TODO: add retry logic; in a reconnect scenario the version fails to
-        // be identified leading to errors
-
-        // as a fallback assume 1.6
-        logger.error("Unable to determine asterisk version, assuming 1.6... you should expect problems to follow.");
-        return AsteriskVersion.ASTERISK_1_6;
+        logger.error("Unable to determine asterisk version, assuming " + AsteriskVersion.DEFAULT_VERSION
+                + "... you should expect problems to follow.");
+        return AsteriskVersion.DEFAULT_VERSION;
     }
 
-    protected String getRawVersion()
+    /**
+     * Get asterisk version by 'core settings' actions. This is supported from
+     * Asterisk 1.6 onwards.
+     *
+     * @return
+     * @throws Exception
+     */
+    protected AsteriskVersion determineVersionByCoreSettings() throws Exception
     {
-        final ManagerResponse showVersionResponse;
 
-        try
+        ManagerResponse response = sendAction(new CoreSettingsAction());
+        if (!(response instanceof CoreSettingsResponse))
         {
-            showVersionResponse = sendAction(new CommandAction("show version"), defaultResponseTimeout * 2);
-        }
-        catch (Exception e)
-        {
+            // NOTE: you need system or reporting permissions
+            logger.info("Could not get core settings, do we have the necessary permissions?");
             return null;
         }
 
-        if (showVersionResponse instanceof CommandResponse)
-        {
-            final List<String> showVersionResult;
+        String ver = ((CoreSettingsResponse) response).getAsteriskVersion();
+        return AsteriskVersion.getDetermineVersionFromString("Asterisk " + ver);
+    }
 
-            showVersionResult = ((CommandResponse) showVersionResponse).getResult();
-            if (showVersionResult != null && !showVersionResult.isEmpty())
-            {
-                return showVersionResult.get(0);
-            }
+    /**
+     * Determine version by the 'core show version' command. This needs
+     * 'command' permissions.
+     *
+     * @return
+     * @throws Exception
+     */
+    protected AsteriskVersion determineVersionByCoreShowVersion() throws Exception
+    {
+        final ManagerResponse coreShowVersionResponse = sendAction(new CommandAction(CMD_SHOW_VERSION));
+
+        if (coreShowVersionResponse == null || !(coreShowVersionResponse instanceof CommandResponse))
+        {
+            // this needs 'command' permissions
+            logger.info("Could not get response for 'core show version'");
+            return null;
         }
 
-        return null;
+        final List<String> coreShowVersionResult = ((CommandResponse) coreShowVersionResponse).getResult();
+        if (coreShowVersionResult == null || coreShowVersionResult.isEmpty())
+        {
+            logger.warn("Got empty response for 'core show version'");
+            return null;
+        }
+
+        final String coreLine = coreShowVersionResult.get(0);
+        return AsteriskVersion.getDetermineVersionFromString(coreLine);
     }
 
     protected synchronized void connect() throws IOException
@@ -865,7 +800,7 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
             }
             socket = null;
         }
-        protocolIdentifier.value = null;
+        protocolIdentifier.reset();
     }
 
     public ManagerResponse sendAction(ManagerAction action)
@@ -874,41 +809,37 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
         return sendAction(action, defaultResponseTimeout);
     }
 
-    /*
+    /**
      * Implements synchronous sending of "simple" actions.
+     * 
+     * @param timeout - in milliseconds
      */
     public ManagerResponse sendAction(ManagerAction action, long timeout)
             throws IOException, TimeoutException, IllegalArgumentException, IllegalStateException
     {
-        ResponseHandlerResult result;
-        SendActionCallback callbackHandler;
+        ResponseHandlerResult result = new ResponseHandlerResult();
+        SendActionCallback callbackHandler = new DefaultSendActionCallback(result);
 
-        result = new ResponseHandlerResult();
-        callbackHandler = new DefaultSendActionCallback(result);
+        sendAction(action, callbackHandler);
 
-        synchronized (result)
+        // definitely return null for the response of user events
+        if (action instanceof UserEventAction)
         {
-            sendAction(action, callbackHandler);
+            return null;
+        }
 
-            // definitely return null for the response of user events
-            if (action instanceof UserEventAction)
+        // only wait if we did not yet receive the response.
+        // Responses may be returned really fast.
+        if (result.getResponse() == null)
+        {
+            try
             {
-                return null;
+                result.await(timeout);
             }
-
-            // only wait if we did not yet receive the response.
-            // Responses may be returned really fast.
-            if (result.getResponse() == null)
+            catch (InterruptedException ex)
             {
-                try
-                {
-                    result.wait(timeout);
-                }
-                catch (InterruptedException ex)
-                {
-                    logger.warn("Interrupted while waiting for result");
-                    Thread.currentThread().interrupt();
-                }
+                logger.warn("Interrupted while waiting for result");
+                Thread.currentThread().interrupt();
             }
         }
 
@@ -977,12 +908,16 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
 
     boolean isShowVersionCommandAction(ManagerAction action)
     {
-        if (!(action instanceof CommandAction))
+        if (action instanceof CoreSettingsAction)
+            return true;
+
+        if (action instanceof CommandAction)
         {
-            return false;
+            String cmd = ((CommandAction) action).getCommand();
+            return CMD_SHOW_VERSION.equals(cmd);
         }
-        final Matcher showVersionMatcher = SHOW_VERSION_PATTERN.matcher(((CommandAction) action).getCommand());
-        return showVersionMatcher.matches();
+
+        return false;
     }
 
     private Class< ? extends ManagerResponse> getExpectedResponseClass(Class< ? extends ManagerAction> actionClass)
@@ -1053,21 +988,18 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
                 this.responseEventListeners.put(internalActionId, responseEventHandler);
             }
 
-            synchronized (responseEvents)
+            writer.sendAction(action, internalActionId);
+            // only wait if response has not yet arrived.
+            if (responseEvents.getResponse() == null || !responseEvents.isComplete())
             {
-                writer.sendAction(action, internalActionId);
-                // only wait if response has not yet arrived.
-                if (responseEvents.getResponse() == null || !responseEvents.isComplete())
+                try
                 {
-                    try
-                    {
-                        responseEvents.wait(timeout);
-                    }
-                    catch (InterruptedException e)
-                    {
-                        logger.warn("Interrupted while waiting for response events.");
-                        Thread.currentThread().interrupt();
-                    }
+                    responseEvents.await(timeout);
+                }
+                catch (InterruptedException e)
+                {
+                    logger.warn("Interrupted while waiting for response events.");
+                    Thread.currentThread().interrupt();
                 }
             }
 
@@ -1148,7 +1080,7 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
 
     public String getProtocolIdentifier()
     {
-        return protocolIdentifier.value;
+        return protocolIdentifier.getValue();
     }
 
     public ManagerConnectionState getState()
@@ -1301,36 +1233,40 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
         {
             // When we receive get disconnected while we are connected start
             // a new reconnect thread and set the state to RECONNECTING.
-            if (state == CONNECTED)
+            synchronized (this)
             {
-                state = RECONNECTING;
-                // close socket if still open and remove reference to
-                // readerThread
-                // After sending the DisconnectThread that thread will die
-                // anyway.
-                cleanup();
-                Thread reconnectThread = new Thread(new Runnable()
+                if (state == CONNECTED)
                 {
-                    public void run()
+                    state = RECONNECTING;
+                    // close socket if still open and remove reference to
+                    // readerThread
+                    // After sending the DisconnectThread that thread will die
+                    // anyway.
+                    cleanup();
+                    Thread reconnectThread = new Thread(new Runnable()
                     {
-                        reconnect();
-                    }
-                });
-                reconnectThread.setName(
-                        "Asterisk-Java ManagerConnection-" + id + "-Reconnect-" + reconnectThreadCounter.getAndIncrement());
-                reconnectThread.setDaemon(true);
-                reconnectThread.start();
-                // now the DisconnectEvent is dispatched to registered
-                // eventListeners
-                // (clients) and after that the ManagerReaderThread is gone.
-                // So effectively we replaced the reader thread by a
-                // ReconnectThread.
-            }
-            else
-            {
-                // when we receive a DisconnectEvent while not connected we
-                // ignore it and do not send it to clients
-                return;
+
+                        public void run()
+                        {
+                            reconnect();
+                        }
+                    });
+                    reconnectThread.setName("Asterisk-Java ManagerConnection-" + id + "-Reconnect-"
+                            + reconnectThreadCounter.getAndIncrement());
+                    reconnectThread.setDaemon(true);
+                    reconnectThread.start();
+                    // now the DisconnectEvent is dispatched to registered
+                    // eventListeners
+                    // (clients) and after that the ManagerReaderThread is gone.
+                    // So effectively we replaced the reader thread by a
+                    // ReconnectThread.
+                }
+                else
+                {
+                    // when we receive a DisconnectEvent while not connected we
+                    // ignore it and do not send it to clients
+                    return;
+                }
             }
         }
         if (event instanceof ProtocolIdentifierReceivedEvent)
@@ -1387,7 +1323,7 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
     /**
      * This method is called when a {@link ProtocolIdentifierReceivedEvent} is
      * received from the reader. Having received a correct protocol identifier
-     * is the precodition for logging in.
+     * is the precondition for logging in.
      *
      * @param identifier the protocol version used by the Asterisk server.
      */
@@ -1395,19 +1331,41 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
     {
         logger.info("Connected via " + identifier);
 
-        if (!"Asterisk Call Manager/1.0".equals(identifier) && !"Asterisk Call Manager/1.1".equals(identifier) // Asterisk
-                                                                                                               // 1.6
-                && !"Asterisk Call Manager/1.2".equals(identifier) // bri
-                                                                   // stuffed
-                && !"Asterisk Call Manager/1.3".equals(identifier) // Asterisk
-                                                                   // 11
-                && !"Asterisk Call Manager/2.6.0".equals(identifier) // Asterisk
-                                                                     // 13
-                && !"Asterisk Call Manager/2.7.0".equals(identifier) // Asterisk
-                                                                     // 13.2
-                && !"Asterisk Call Manager/2.8.0".equals(identifier) // Asterisk > 13.5
+        // NOTE: value is AMI_VERSION, defined in include/asterisk/manager.h
 
-			    && !"Asterisk Call Manager/2.9.0".equals(identifier) // Asterisk > 13.13
+        if (
+        // Asterisk 13
+        !"Asterisk Call Manager/2.6.0".equals(identifier)
+
+                // Asterisk 13.2
+                && !"Asterisk Call Manager/2.7.0".equals(identifier)
+
+                // Asterisk > 13.5
+                && !"Asterisk Call Manager/2.8.0".equals(identifier)
+
+                // Asterisk > 13.13
+                && !"Asterisk Call Manager/2.9.0".equals(identifier)
+
+                // Asterisk =14.3.0
+                && !"Asterisk Call Manager/3.1.0".equals(identifier)
+
+                // since Asterisk 14.4.0
+                && !"Asterisk Call Manager/3.2.0".equals(identifier)
+
+                // since Asterisk 15
+                && !"Asterisk Call Manager/4.0.0".equals(identifier)
+
+                // since Asterisk 15.1
+                && !"Asterisk Call Manager/4.0.1".equals(identifier)
+
+                // since Asterisk 15.2
+                && !"Asterisk Call Manager/4.0.2".equals(identifier)
+
+                // since Asterisk 15.3
+                && !"Asterisk Call Manager/4.0.3".equals(identifier)
+
+                // Asterisk 16
+                && !"Asterisk Call Manager/5.0.0".equals(identifier)
 
                 && !"OpenPBX Call Manager/1.0".equals(identifier) && !"CallWeaver Call Manager/1.0".equals(identifier)
                 && !(identifier != null && identifier.startsWith("Asterisk Call Manager Proxy/")))
@@ -1415,11 +1373,9 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
             logger.warn("Unsupported protocol version '" + identifier + "'. Use at your own risk.");
         }
 
-        synchronized (protocolIdentifier)
-        {
-            protocolIdentifier.value = identifier;
-            protocolIdentifier.notifyAll();
-        }
+        protocolIdentifier.setValue(identifier);
+        protocolIdentifier.countDown();
+
     }
 
     /**
@@ -1439,7 +1395,7 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
 
         // try to reconnect
         numTries = 0;
-        while (state == RECONNECTING)
+        while (true)
         {
             try
             {
@@ -1463,33 +1419,41 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
 
             try
             {
-                connect();
+                synchronized (this)
+                {
+                    if (state != RECONNECTING)
+                    {
+                        break;
+                    }
+                    connect();
 
-                try
-                {
-                    doLogin(defaultResponseTimeout, eventMask);
-                    logger.info("Successfully reconnected.");
-                    // everything is ok again, so we leave
-                    // when successful doLogin set the state to CONNECTED so no
-                    // need to adjust it
-                    break;
-                }
-                catch (AuthenticationFailedException e1)
-                {
-                    if (keepAliveAfterAuthenticationFailure)
+                    try
                     {
-                        logger.error("Unable to log in after reconnect: " + e1.getMessage());
+                        doLogin(defaultResponseTimeout, eventMask);
+                        logger.info("Successfully reconnected.");
+                        // everything is ok again, so we leave
+                        // when successful doLogin set the state to CONNECTED so
+                        // no
+                        // need to adjust it
+                        break;
                     }
-                    else
+                    catch (AuthenticationFailedException e1)
                     {
-                        logger.error("Unable to log in after reconnect: " + e1.getMessage() + ". Giving up.");
-                        state = DISCONNECTED;
+                        if (keepAliveAfterAuthenticationFailure)
+                        {
+                            logger.error("Unable to log in after reconnect: " + e1.getMessage());
+                        }
+                        else
+                        {
+                            logger.error("Unable to log in after reconnect: " + e1.getMessage() + ". Giving up.");
+                            state = DISCONNECTED;
+                        }
                     }
-                }
-                catch (TimeoutException e1)
-                {
-                    // shouldn't happen - but happens!
-                    logger.error("TimeoutException while trying to log in " + "after reconnect.");
+                    catch (TimeoutException e1)
+                    {
+                        // shouldn't happen - but happens!
+                        logger.error("TimeoutException while trying to log in " + "after reconnect.");
+                    }
                 }
             }
             catch (IOException e)
@@ -1540,6 +1504,7 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
          */
         private static final long serialVersionUID = 7831097958568769220L;
         private ManagerResponse response;
+        private final CountDownLatch latch = new CountDownLatch(1);
 
         public ResponseHandlerResult()
         {
@@ -1554,6 +1519,21 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
         {
             this.response = response;
         }
+
+        private void countDown()
+        {
+            latch.countDown();
+        }
+
+        /**
+         * @param millis - milliseconds to wait
+         * @throws InterruptedException
+         */
+        private void await(long millis) throws InterruptedException
+        {
+            latch.await(millis, TimeUnit.MILLISECONDS);
+        }
+
     }
 
     /**
@@ -1580,11 +1560,8 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
 
         public void onResponse(ManagerResponse response)
         {
-            synchronized (result)
-            {
-                result.setResponse(response);
-                result.notifyAll();
-            }
+            result.setResponse(response);
+            result.countDown();
         }
     }
 
@@ -1612,55 +1589,44 @@ public class ManagerConnectionImpl implements ManagerConnection, Dispatcher
 
         public void onManagerEvent(ManagerEvent event)
         {
-            synchronized (events)
+            // should always be a ResponseEvent, anyway...
+            if (event instanceof ResponseEvent)
             {
-                // should always be a ResponseEvent, anyway...
-                if (event instanceof ResponseEvent)
-                {
-                    ResponseEvent responseEvent;
+                ResponseEvent responseEvent;
 
-                    responseEvent = (ResponseEvent) event;
-                    events.addEvent(responseEvent);
-                }
+                responseEvent = (ResponseEvent) event;
+                events.addEvent(responseEvent);
+            }
 
-                // finished?
-                if (actionCompleteEventClass.isAssignableFrom(event.getClass()))
+            // finished?
+            if (actionCompleteEventClass.isAssignableFrom(event.getClass()))
+            {
+                events.setComplete(true);
+                // notify if action complete event and response have been
+                // received
+                if (events.getResponse() != null)
                 {
-                    events.setComplete(true);
-                    // notify if action complete event and response have been
-                    // received
-                    if (events.getResponse() != null)
-                    {
-                        events.notifyAll();
-                    }
+                    events.countDown();
                 }
             }
         }
 
         public void onResponse(ManagerResponse response)
         {
-            synchronized (events)
+            events.setRepsonse(response);
+            if (response instanceof ManagerError)
             {
-                events.setRepsonse(response);
-                if (response instanceof ManagerError)
-                {
-                    events.setComplete(true);
-                }
+                events.setComplete(true);
+            }
 
-                // finished?
-                // notify if action complete event and response have been
-                // received
-                if (events.isComplete())
-                {
-                    events.notifyAll();
-                }
+            // finished?
+            // notify if action complete event and response have been
+            // received
+            if (events.isComplete())
+            {
+                events.countDown();
             }
         }
-    }
-
-    private static class ProtocolIdentifierWrapper
-    {
-        String value;
     }
 
     @Override

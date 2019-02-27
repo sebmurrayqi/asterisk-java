@@ -5,9 +5,11 @@ import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 
 import org.asteriskjava.manager.event.UserEvent;
+import org.asteriskjava.manager.response.ManagerResponse;
 import org.asteriskjava.util.AstUtil;
 import org.asteriskjava.util.Log;
 import org.asteriskjava.util.LogFactory;
@@ -54,15 +56,6 @@ abstract class AbstractBuilder
                 setterName = "clazz";
             }
 
-            /*
-             * The class property needs to be renamed. It is used in
-             * MusicOnHoldEvent.
-             */
-            if ("class".equals(setterName))
-            {
-                setterName = "classname";
-            }
-
             setter = setters.get(setterName);
 
             if (setter == null && !setterName.endsWith("s")) // no exact match
@@ -78,11 +71,16 @@ abstract class AbstractBuilder
 
             // it seems silly to warn if it's a user event -- maybe it was
             // intentional
-            if (setter == null && !(target instanceof UserEvent))
+            if (setter == null && !(target instanceof UserEvent) && !target.getClass().equals(ManagerResponse.class))
             {
                 logger.warn("Unable to set property '" + entry.getKey() + "' to '" + entry.getValue() + "' on "
                         + target.getClass().getName()
                         + ": no setter. Please report at https://github.com/asterisk-java/asterisk-java/issues");
+
+                for (Entry<String, Object> entry2 : attributes.entrySet())
+                {
+                    logger.debug("Key: " + entry2.getKey() + " Value: " + entry2.getValue());
+                }
             }
 
             if (setter == null)
@@ -103,6 +101,18 @@ abstract class AbstractBuilder
                 {
 
                     value = null;
+                }
+                if (value instanceof List)
+                {
+                    StringBuilder strBuff = new StringBuilder();
+                    for (String tmp : (List<String>) value)
+                    {
+                        if (tmp != null && tmp.length() != 0)
+                        {
+                            strBuff.append(tmp).append('\n');
+                        }
+                    }
+                    value = strBuff.toString();
                 }
             }
             else if (dataType.isAssignableFrom(Map.class))
@@ -125,7 +135,7 @@ abstract class AbstractBuilder
             {
                 try
                 {
-                    Constructor< ? > constructor = dataType.getConstructor(new Class[]{String.class});
+                    Constructor< ? > constructor = dataType.getConstructor(String.class);
                     value = constructor.newInstance(entry.getValue());
                 }
                 catch (Exception e)

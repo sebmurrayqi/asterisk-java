@@ -17,7 +17,8 @@
 package org.asteriskjava.manager.event;
 
 /**
- * A HangupEvent is triggered when a channel is hung up.<p>
+ * A HangupEvent is triggered when a channel is hung up.
+ * <p>
  * It is implemented in <code>channel.c</code>
  *
  * @author srt
@@ -34,10 +35,7 @@ public class HangupEvent extends AbstractChannelStateEvent
     private String causeTxt;
     private String language;
     private String linkedId;
-    private String connectedlinenum;
 
-    private String accountCode;
-    
     public HangupEvent(Object source)
     {
         super(source);
@@ -45,14 +43,14 @@ public class HangupEvent extends AbstractChannelStateEvent
 
     public String getLanguage()
     {
-    	return language;
+        return language;
     }
-    
+
     public void setLanguage(String language)
     {
-    	this.language = language;
-    }       
-    
+        this.language = language;
+    }
+
     /**
      * Returns the cause of the hangup.
      *
@@ -96,16 +94,6 @@ public class HangupEvent extends AbstractChannelStateEvent
         this.causeTxt = causeTxt;
     }
 
-	public String getAccountCode() 
-	{
-		return accountCode;
-	}
-
-	public void setAccountCode(String accountCode) 
-	{
-		this.accountCode = accountCode;
-	}
-
     public String getLinkedId()
     {
         return linkedId;
@@ -134,13 +122,4 @@ public class HangupEvent extends AbstractChannelStateEvent
         return builder.toString();
     }
 
-	public String getConnectedlinenum()
-	{
-		return connectedlinenum;
-	}
-
-	public void setConnectedlinenum(String connectedlinenum)
-	{
-		this.connectedlinenum = connectedlinenum;
-	}
 }

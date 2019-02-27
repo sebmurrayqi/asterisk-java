@@ -1,22 +1,24 @@
 package org.asteriskjava.pbx.internal.managerAPI;
 
-import org.apache.log4j.Logger;
 import org.asteriskjava.pbx.Channel;
 import org.asteriskjava.pbx.PBXException;
 import org.asteriskjava.pbx.PBXFactory;
 import org.asteriskjava.pbx.agi.AgiChannelActivityMeetme;
 import org.asteriskjava.pbx.internal.core.AsteriskPBX;
+import org.asteriskjava.util.Log;
+import org.asteriskjava.util.LogFactory;
 
 public class RedirectToMeetMe
 {
-    static Logger logger = Logger.getLogger(RedirectToMeetMe.class);
+    private static final Log logger = LogFactory.getLog(RedirectToMeetMe.class);
 
     public RedirectToMeetMe()
     {
         super();
     }
 
-    public boolean redirectToMeetme(final Channel channel, final String room, final boolean markedUser) throws PBXException
+    public boolean redirectToMeetme(final Channel channel, final String room, String bridgeProfile, String userProfile)
+            throws PBXException
     {
         final AsteriskPBX pbx = (AsteriskPBX) PBXFactory.getActivePBX();
         /*
@@ -27,23 +29,13 @@ public class RedirectToMeetMe
          * set marked user
          */
 
-        RedirectToMeetMe.logger.info("redirect to Meetme channel " + channel + " room " + room //$NON-NLS-1$ //$NON-NLS-2$
-                + " markedUser " + markedUser); //$NON-NLS-1$
-        String options = new String();
-        if (markedUser == true)
-        {
-            options = "qdxAF"; //$NON-NLS-1$
-        }
-        else
-        {
-            options = "qdxF"; //$NON-NLS-1$
-        }
+        RedirectToMeetMe.logger.info("redirect to Meetme channel " + channel + " room " + room);
 
         if (!pbx.moveChannelToAgi(channel))
         {
             throw new PBXException("Channel: " + channel + " couldn't be moved to agi");
         }
-        channel.setCurrentActivityAction(new AgiChannelActivityMeetme(room, options));
+        channel.setCurrentActivityAction(new AgiChannelActivityMeetme(room, bridgeProfile, userProfile));
 
         return true;
     }

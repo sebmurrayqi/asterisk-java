@@ -1,6 +1,5 @@
 package org.asteriskjava.pbx.asterisk.wrap.events;
 
-import org.apache.log4j.Logger;
 import org.asteriskjava.pbx.Channel;
 import org.asteriskjava.pbx.InvalidChannelName;
 import org.asteriskjava.pbx.PBXFactory;
@@ -9,9 +8,6 @@ import org.asteriskjava.pbx.internal.core.AsteriskPBX;
 public abstract class ChannelEventHelper extends ManagerEvent implements ChannelEvent
 {
     private static final long serialVersionUID = 1L;
-
-    @SuppressWarnings("unused")
-    private static final Logger logger = Logger.getLogger(ChannelEventHelper.class);
 
     /**
      * The name of the channel.
@@ -26,18 +22,31 @@ public abstract class ChannelEventHelper extends ManagerEvent implements Channel
     protected ChannelEventHelper(final String channel, final String uniqueId, final String callerIdNum,
             final String callerIdName) throws InvalidChannelName
     {
-        super(channel); // we must have a source but since don't have one pass
-                        // anything.
-        this.channel = ChannelEventHelper.registerChannel(channel, uniqueId, callerIdNum, callerIdName);
+        super(""); // we must have a source but since don't have one pass
+                   // anything.
+        if (channel != null)
+        {
+            this.channel = ChannelEventHelper.registerChannel(channel, uniqueId, callerIdNum, callerIdName);
+        }
+        else
+        {
+            this.channel = null;
+        }
     }
 
     public ChannelEventHelper(final String channel, final String uniqueId) throws InvalidChannelName
     {
-        super(channel);// we must have a source but since don't have one pass
-                       // anything.
+        super("");// we must have a source but since don't have one pass
+                  // anything.
         final AsteriskPBX pbx = (AsteriskPBX) PBXFactory.getActivePBX();
-
-        this.channel = pbx.internalRegisterChannel(channel, uniqueId);
+        if (channel != null)
+        {
+            this.channel = pbx.internalRegisterChannel(channel, uniqueId);
+        }
+        else
+        {
+            this.channel = null;
+        }
     }
 
     @Override

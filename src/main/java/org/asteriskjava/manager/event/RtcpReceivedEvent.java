@@ -66,12 +66,12 @@ public class RtcpReceivedEvent extends AbstractRtcpEvent
     private Integer reportCount;
     private Integer report0CumulativeLost;
     private Integer report0FractionLost;
-    private Integer report0iaJitter;
+    private Long report0iaJitter;
     private Integer report0HighestSequence;
     private InetAddress toAddress;
     private Integer toPort;
     private String sentntp;
-    private Integer sentPackets;
+    private Long sentPackets;
     private Long sentrtp;
     private String accountCode;
     
@@ -364,12 +364,12 @@ public class RtcpReceivedEvent extends AbstractRtcpEvent
         this.report0FractionLost = report0FractionLost;
     }
 
-    public Integer getReport0iaJitter()
+    public Long getReport0iaJitter()
     {
         return report0iaJitter;
     }
 
-    public void setReport0iaJitter(Integer report0iaJitter)
+    public void setReport0iaJitter(Long report0iaJitter)
     {
         this.report0iaJitter = report0iaJitter;
     }
@@ -429,12 +429,12 @@ public class RtcpReceivedEvent extends AbstractRtcpEvent
         this.linkedId = linkedId;
     }
 
-    public Integer getSentPackets()
+    public Long getSentPackets()
     {
         return sentPackets;
     }
 
-    public void setSentPackets(Integer sentPackets)
+    public void setSentPackets(Long sentPackets)
     {
         this.sentPackets = sentPackets;
     }
